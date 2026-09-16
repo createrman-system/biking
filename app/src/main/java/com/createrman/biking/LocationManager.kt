@@ -16,15 +16,27 @@ import kotlinx.coroutines.launch
  * Fuses GPS speed with accelerometer/gyroscope data for responsive, accurate speed tracking.
  * Also tracks route points for map visualization.
  */
-class LocationManager(private val context: Context) {
-    private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as AndroidLocationManager
+class LocationManager private constructor(context: Context) {
+    private val appContext = context.applicationContext
+    private val locationManager = appContext.getSystemService(Context.LOCATION_SERVICE) as AndroidLocationManager
     
     // Hybrid speed system
-    private val sensorCollector = SensorDataCollector(context)
+    private val sensorCollector = SensorDataCollector(appContext)
     private val hybridCalculator = HybridSpeedCalculator()
     
     // Route tracking
     private val routeTracker = RouteTracker()
+    
+    companion object {
+        @Volatile
+        private var INSTANCE: LocationManager? = null
+
+        fun getInstance(context: Context): LocationManager {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: LocationManager(context).also { INSTANCE = it }
+            }
+        }
+    }
     val routePointsFlow: StateFlow<List<Pair<Double, Double>>> = routeTracker.routePointsFlow
     val currentLocationFlow: StateFlow<Pair<Double, Double>?> = routeTracker.currentLocationFlow
     val distanceFlow: StateFlow<Double> = routeTracker.distanceFlow
@@ -154,6 +166,7 @@ class LocationManager(private val context: Context) {
      */
     fun getRouteStats(): RouteStats {
         return RouteStats(
+            currentSpeed = _speedFlow.value,
             distance = routeTracker.getDistanceKm(),
             duration = routeTracker.getFormattedDuration(),
             maxSpeed = maxSpeedFlow.value,

@@ -1,7 +1,9 @@
 package com.createrman.biking
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.ManagedActivityResultLauncher
@@ -46,7 +48,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         
-        locationManager = LocationManager(this)
+        locationManager = LocationManager.getInstance(this)
         
         setContent {
             BikingTheme {
@@ -63,7 +65,7 @@ class MainActivity : ComponentActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
-        locationManager.stopTracking()
+        // Removed locationManager.stopTracking() to allow background tracking
     }
 }
 
@@ -81,7 +83,13 @@ fun MainScreen(
             value = ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
+            ) == PackageManager.PERMISSION_GRANTED &&
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else true)
         )
     }
     
@@ -96,7 +104,14 @@ fun MainScreen(
     LaunchedEffect(hasLocationPermission) {
         if (hasLocationPermission && !isTracking && !isStartingTracking) {
             isStartingTracking = true
-            locationManager.startTracking()
+            val intent = Intent(context, TrackingService::class.java).apply {
+                action = TrackingService.ACTION_START
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
             isStartingTracking = false
         }
     }
@@ -117,10 +132,17 @@ fun MainScreen(
                 locationManager = locationManager,
                 isTracking = isTracking,
                 onTrackingToggle = {
+                    val intent = Intent(context, TrackingService::class.java)
                     if (isTracking) {
-                        locationManager.stopTracking()
+                        intent.action = TrackingService.ACTION_STOP
                     } else {
-                        locationManager.startTracking()
+                        intent.action = TrackingService.ACTION_START
+                    }
+                    
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(intent)
+                    } else {
+                        context.startService(intent)
                     }
                 },
                 onSwitchToSpeedometer = { viewMode = ViewMode.SPEEDOMETER },
@@ -167,13 +189,15 @@ fun PermissionScreen(
             )
             Button(
                 onClick = {
-                    permissionLauncher?.launch(
-                        arrayOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION,
-                            Manifest.permission.BODY_SENSORS
-                        )
+                    val permissions = mutableListOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                        Manifest.permission.BODY_SENSORS
                     )
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                    permissionLauncher?.launch(permissions.toTypedArray())
                 },
                 modifier = Modifier.padding(top = 24.dp)
             ) {
@@ -202,7 +226,13 @@ fun SpeedTrackerScreen(
             value = ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
+            ) == PackageManager.PERMISSION_GRANTED &&
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else true)
         )
     }
     
@@ -217,7 +247,14 @@ fun SpeedTrackerScreen(
     LaunchedEffect(hasLocationPermission) {
         if (hasLocationPermission && !isTracking && !isStartingTracking) {
             isStartingTracking = true
-            locationManager.startTracking()
+            val intent = Intent(context, TrackingService::class.java).apply {
+                action = TrackingService.ACTION_START
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
             isStartingTracking = false
         }
     }
@@ -253,13 +290,15 @@ fun SpeedTrackerScreen(
                     )
                     Button(
                         onClick = {
-                            permissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.ACCESS_FINE_LOCATION,
-                                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                                    Manifest.permission.BODY_SENSORS
-                                )
+                            val permissions = mutableListOf(
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                                Manifest.permission.BODY_SENSORS
                             )
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+                            }
+                            permissionLauncher.launch(permissions.toTypedArray())
                         }
                     ) {
                         Text("Grant Permissions")
@@ -366,10 +405,17 @@ fun SpeedTrackerScreen(
                 ) {
                     Button(
                         onClick = {
+                            val intent = Intent(context, TrackingService::class.java)
                             if (isTracking) {
-                                locationManager.stopTracking()
+                                intent.action = TrackingService.ACTION_STOP
                             } else {
-                                locationManager.startTracking()
+                                intent.action = TrackingService.ACTION_START
+                            }
+                            
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                context.startForegroundService(intent)
+                            } else {
+                                context.startService(intent)
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),

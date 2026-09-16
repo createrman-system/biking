@@ -1,6 +1,7 @@
 package com.createrman.biking
 
 data class RouteStats(
+    val currentSpeed: Float,     // km/h
     val distance: Double,        // kilometers
     val duration: String,        // formatted HH:MM:SS
     val maxSpeed: Float,         // km/h
