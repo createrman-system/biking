@@ -5,171 +5,144 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/**
- * Collects accelerometer and gyroscope sensor data for speed estimation.
- * Handles sensor calibration and filters raw sensor values.
- */
+data class MotionSample(
+    val forwardAcceleration: Float,
+    val horizontalAccelerationMagnitude: Float,
+    val confidence: Float,
+    val timestampNanos: Long,
+)
+
 class SensorDataCollector(context: Context) : SensorEventListener {
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-    
+    private val rotationVector = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+    private val linearAcceleration = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
     private val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-    private val gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-    
-    // Sensor calibration - initially set to gravity
-    private val accelerometerBias = FloatArray(3) { if (it == 2) 9.81f else 0f }
-    private val gyroscopeBias = FloatArray(3)
-    
-    // Current sensor readings (device frame)
-    private val _accelerationFlow = MutableStateFlow(FloatArray(3))
-    val accelerationFlow: StateFlow<FloatArray> = _accelerationFlow
-    
-    private val _rotationRateFlow = MutableStateFlow(FloatArray(3))
-    val rotationRateFlow: StateFlow<FloatArray> = _rotationRateFlow
-    
-    // Calibration state
+    private val gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+
+    private val rotationMatrix = FloatArray(9)
+    private val gravity = FloatArray(3)
+    private val rawAcceleration = FloatArray(3)
+    private val worldLinearAcceleration = FloatArray(3)
+
+    private var hasRotation = false
+    private var hasLinearAcceleration = false
+    private var lastBearingDegrees: Float? = null
+    private var isListening = false
+
+    private val _motionSample = MutableStateFlow(MotionSample(0f, 0f, 0f, 0L))
+    val motionSample: StateFlow<MotionSample> = _motionSample
+
     private val _isCalibrated = MutableStateFlow(false)
     val isCalibrated: StateFlow<Boolean> = _isCalibrated
-    
-    private var calibrationCount = 0
-    private val calibrationSamples = 30
-    private val calibrationAccels = MutableList(calibrationSamples) { FloatArray(3) }
-    private val calibrationGyros = MutableList(calibrationSamples) { FloatArray(3) }
-    
-    private var isListening = false
-    
+
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
+            Sensor.TYPE_ROTATION_VECTOR -> {
+                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                hasRotation = true
+                _isCalibrated.value = true
+            }
+
+            Sensor.TYPE_LINEAR_ACCELERATION -> {
+                rawAcceleration[0] = event.values[0]
+                rawAcceleration[1] = event.values[1]
+                rawAcceleration[2] = event.values[2]
+                hasLinearAcceleration = true
+                emitMotion(event.timestamp)
+            }
+
+            Sensor.TYPE_GRAVITY -> {
+                gravity[0] = event.values[0]
+                gravity[1] = event.values[1]
+                gravity[2] = event.values[2]
+            }
+
             Sensor.TYPE_ACCELEROMETER -> {
-                if (!_isCalibrated.value) {
-                    // Collect calibration data
-                    if (calibrationCount < calibrationSamples) {
-                        event.values.forEachIndexed { i, v -> calibrationAccels[calibrationCount][i] = v }
-                        calibrationCount++
-                        
-                        if (calibrationCount >= calibrationSamples) {
-                            computeCalibration()
-                            _isCalibrated.value = true
-                            calibrationCount = 0
-                        }
-                    }
-                } else {
-                    // Filter accelerometer values: subtract bias and apply high-pass filter
-                    val filtered = FloatArray(3) { i ->
-                        event.values[i] - accelerometerBias[i]
-                    }
-                    _accelerationFlow.value = filtered
+                if (!hasLinearAcceleration) {
+                    rawAcceleration[0] = event.values[0] - gravity[0]
+                    rawAcceleration[1] = event.values[1] - gravity[1]
+                    rawAcceleration[2] = event.values[2] - gravity[2]
+                    emitMotion(event.timestamp)
                 }
-            }
-            
-            Sensor.TYPE_GYROSCOPE -> {
-                // Filter gyroscope values: subtract bias (zero if not used)
-                val filtered = FloatArray(3) { i ->
-                    event.values[i] - gyroscopeBias[i]
-                }
-                _rotationRateFlow.value = filtered
             }
         }
     }
-    
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // Accuracy change handling (optional)
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    fun setCourseBearing(bearingDegrees: Float?) {
+        lastBearingDegrees = bearingDegrees
     }
-    
-    /**
-     * Compute calibration offsets from collected samples.
-     * Accelerometer bias = average of collected accelerations (device at rest)
-     * Gyroscope bias = average of collected rotation rates (device at rest)
-     */
-    private fun computeCalibration() {
-        // Accelerometer bias - average over samples, but account for gravity
-        val avgAccelX = calibrationAccels.map { it[0] }.average().toFloat()
-        val avgAccelY = calibrationAccels.map { it[1] }.average().toFloat()
-        val avgAccelZ = calibrationAccels.map { it[2] }.average().toFloat()
-        
-        // Compute magnitude of acceleration (should be ~9.81 m/s² for gravity)
-        val accelMagnitude = sqrt(avgAccelX * avgAccelX + avgAccelY * avgAccelY + avgAccelZ * avgAccelZ)
-        
-        // Only use calibration if magnitude is close to gravity (9.81 ± 1 m/s²)
-        // This indicates the device is truly at rest
-        if (accelMagnitude in 8.5f..10.5f) {
-            accelerometerBias[0] = avgAccelX
-            accelerometerBias[1] = avgAccelY
-            accelerometerBias[2] = avgAccelZ
+
+    private fun emitMotion(timestampNanos: Long) {
+        if (!hasRotation) return
+
+        worldLinearAcceleration[0] =
+            rotationMatrix[0] * rawAcceleration[0] + rotationMatrix[1] * rawAcceleration[1] + rotationMatrix[2] * rawAcceleration[2]
+        worldLinearAcceleration[1] =
+            rotationMatrix[3] * rawAcceleration[0] + rotationMatrix[4] * rawAcceleration[1] + rotationMatrix[5] * rawAcceleration[2]
+        worldLinearAcceleration[2] =
+            rotationMatrix[6] * rawAcceleration[0] + rotationMatrix[7] * rawAcceleration[1] + rotationMatrix[8] * rawAcceleration[2]
+
+        val east = worldLinearAcceleration[0]
+        val north = worldLinearAcceleration[1]
+        val horizontalMagnitude = sqrt(east * east + north * north)
+        val bearing = lastBearingDegrees
+        val forward = if (bearing != null) {
+            val rad = Math.toRadians(bearing.toDouble())
+            (east * sin(rad) + north * cos(rad)).toFloat()
         } else {
-            // Device was moving during calibration, use default gravity direction
-            accelerometerBias[0] = 0f
-            accelerometerBias[1] = 0f
-            accelerometerBias[2] = 9.81f
+            // When bearing is unknown, we can't reliably determine forward motion.
+            // Using horizontal magnitude directly causes positive drift from vibration.
+            // We use a small fraction to represent "potential" motion, or 0 if very small.
+            if (horizontalMagnitude < 0.15f) 0f else horizontalMagnitude * 0.5f
         }
-        
-        // Gyroscope bias - average over samples (should be ~0 at rest)
-        gyroscopeBias[0] = calibrationGyros.map { it[0] }.average().toFloat()
-        gyroscopeBias[1] = calibrationGyros.map { it[1] }.average().toFloat()
-        gyroscopeBias[2] = calibrationGyros.map { it[2] }.average().toFloat()
+
+        val tiltPenalty = (abs(worldLinearAcceleration[2]) / 9.81f).coerceIn(0f, 0.6f)
+        val baseConfidence = when {
+            bearing != null && hasLinearAcceleration -> 0.95f
+            bearing != null -> 0.85f // Increased slightly
+            hasLinearAcceleration -> 0.45f // Decreased to trust unknown-bearing sensors less
+            else -> 0.25f
+        }
+
+        _motionSample.value = MotionSample(
+            forwardAcceleration = forward.coerceIn(-8f, 8f),
+            horizontalAccelerationMagnitude = horizontalMagnitude,
+            confidence = (baseConfidence - tiltPenalty).coerceIn(0.1f, 1f),
+            timestampNanos = timestampNanos,
+        )
     }
-    
+
     fun startListening() {
         if (isListening) return
-        
-        accelerometer?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-        }
-        gyroscope?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        rotationVector?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        linearAcceleration?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        gravitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        if (linearAcceleration == null) {
+            accelerometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         }
         isListening = true
-        _isCalibrated.value = false
-        calibrationCount = 0
     }
-    
+
     fun stopListening() {
         if (!isListening) return
-        
         sensorManager.unregisterListener(this)
         isListening = false
+        hasRotation = false
+        hasLinearAcceleration = false
         _isCalibrated.value = false
-        _accelerationFlow.value = FloatArray(3)
-        _rotationRateFlow.value = FloatArray(3)
+        _motionSample.value = MotionSample(0f, 0f, 0f, 0L)
     }
-    
-    /**
-     * Get the magnitude of acceleration (total acceleration magnitude).
-     */
-    fun getAccelerationMagnitude(): Float {
-        val accel = _accelerationFlow.value
-        return sqrt(accel[0] * accel[0] + accel[1] * accel[1] + accel[2] * accel[2])
-    }
-    
-    /**
-     * Estimate forward-axis acceleration assuming device is held upright.
-     * Gyroscope helps determine device orientation.
-     * Applies additional filtering to reduce noise.
-     */
-    fun getForwardAcceleration(): Float {
-        // Simplified: assume forward axis is primarily Y or Z depending on device orientation
-        // A more robust implementation would use gyroscope to compute full rotation matrix
-        val accel = _accelerationFlow.value
-        val gyro = _rotationRateFlow.value
-        
-        // Get the raw forward acceleration based on device orientation
-        val rawForwardAccel = if (kotlin.math.abs(gyro[2]) > 0.5f) {
-            accel[1] // Primary Y axis when rotating around Z
-        } else {
-            accel[2] // Primary Z axis when rotation is low
-        }
-        
-        // Apply high-pass filter to remove low-frequency drift
-        // This is done via a simple deadzone - ignore very small values
-        val filteredAccel = if (kotlin.math.abs(rawForwardAccel) < 0.1f) {
-            0f  // Treat tiny values as noise
-        } else {
-            rawForwardAccel
-        }
-        
-        return filteredAccel
-    }
+
+    fun getAccelerationMagnitude(): Float = _motionSample.value.horizontalAccelerationMagnitude
+
+    fun getForwardAcceleration(): Float = _motionSample.value.forwardAcceleration
 }

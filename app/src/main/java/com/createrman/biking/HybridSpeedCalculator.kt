@@ -1,127 +1,147 @@
 package com.createrman.biking
 
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * Calculates hybrid speed by fusing GPS speed with accelerometer data.
- * Provides responsive speed estimates even when GPS signal is weak or unavailable.
- * 
- * Includes motion detection to avoid noise when stationary.
+ * Fuses GPS speed and world-frame forward acceleration.
  */
-class HybridSpeedCalculator {
-    private val kalmanFilter = KalmanFilter(
-        processNoise = 0.05f,     // More conservative - trust GPS more
-        measurementNoise = 0.3f   // GPS is more reliable than we thought
+class HybridSpeedCalculator(
+    private val autoPauseDelaySeconds: Int = 8,
+) {
+    data class Result(
+        val speedMetersPerSecond: Float,
+        val isMoving: Boolean,
+        val isAutoPaused: Boolean,
+        val accelerationVariance: Float,
     )
-    
-    // Exponential moving average for smoothing
-    private var smoothedSpeed = 0.0f
-    private val smoothingAlpha = 0.2f  // Lower = more smoothing, less jitter
-    
-    // Motion detection
-    private var recentAccelerations = FloatArray(10)  // Last 10 acceleration samples
-    private var accelIndex = 0
-    private val motionThreshold = 0.2f  // m/s² - must exceed this to consider motion
-    private val motionSamples = 5  // Must have N consecutive readings above threshold
-    private var motionDetected = false
-    private var motionSampleCount = 0
-    
-    private var lastGPSUpdateTime = System.currentTimeMillis()
-    private var lastAccelUpdateTime = System.currentTimeMillis()
-    
-    /**
-     * Update with GPS speed measurement.
-     * @param speedMs GPS speed in m/s
-     */
-    fun updateGPSSpeed(speedMs: Float) {
-        val currentTime = System.currentTimeMillis()
-        
-        // GPS speed is ground truth - always use it
-        // But clamp to reasonable values
-        val clampedSpeed = speedMs.coerceIn(0f, 50f)  // 0-180 km/h
-        kalmanFilter.updateWithGPS(clampedSpeed)
-        
-        lastGPSUpdateTime = currentTime
+
+    private val kalmanFilter = KalmanFilter()
+    private val accelerationWindow = ArrayDeque<Float>()
+    private var smoothedSpeed = 0f
+    private var lastGpsSpeed = 0f
+    private var lastUpdateNanos = 0L
+    private var stationarySinceMillis: Long? = null
+    private var autoPaused = false
+
+    @Synchronized
+    fun updateGpsSpeed(
+        speedMetersPerSecond: Float,
+        accuracyMeters: Float,
+        hasBearing: Boolean,
+        timestampMillis: Long = System.currentTimeMillis(),
+    ): Result {
+        lastGpsSpeed = speedMetersPerSecond.coerceIn(0f, 45f)
+        kalmanFilter.updateWithGps(lastGpsSpeed, accuracyMeters, hasBearing)
+        return publish(timestampMillis)
     }
-    
-    /**
-     * Update with accelerometer data for inter-GPS-update estimates.
-     * @param forwardAcceleration Acceleration along forward axis in m/s²
-     */
-    fun updateAcceleration(forwardAcceleration: Float) {
-        val currentTime = System.currentTimeMillis()
-        val deltaTimeMs = (currentTime - lastAccelUpdateTime).toLong()
-        val deltaTimeS = (deltaTimeMs / 1000.0f).coerceAtLeast(0.001f)
+
+    @Synchronized
+    fun updateAcceleration(
+        forwardAcceleration: Float,
+        confidence: Float,
+        timestampNanos: Long,
+        timestampMillis: Long = System.currentTimeMillis(),
+    ): Result {
+        val dt = if (lastUpdateNanos == 0L) {
+            0.02f
+        } else {
+            ((timestampNanos - lastUpdateNanos) / 1_000_000_000f).coerceIn(0.001f, 0.25f)
+        }
+        lastUpdateNanos = timestampNanos
+
+        val filteredAcceleration = if (abs(forwardAcceleration) < 0.06f) 0f else forwardAcceleration // Increased deadzone
+        pushAcceleration(filteredAcceleration)
+        val variance = accelerationVariance()
         
-        // Store recent acceleration for motion detection
-        recentAccelerations[accelIndex] = kotlin.math.abs(forwardAcceleration)
-        accelIndex = (accelIndex + 1) % recentAccelerations.size
-        
-        // Check if we have continuous motion
-        val avgRecentAccel = recentAccelerations.average().toFloat()
-        
-        if (avgRecentAccel > motionThreshold) {
-            motionSampleCount++
-            if (motionSampleCount >= motionSamples) {
-                motionDetected = true
+        // HARD STATIONARY GATE: If GPS says we are stopped and vibration is low, FORCE speed to 0.
+        val likelyStationary = lastGpsSpeed < 0.25f && variance < 0.045f && abs(filteredAcceleration) < 0.15f
+
+        if (likelyStationary) {
+            kalmanFilter.forceStationary(dt)
+            if (variance < 0.02f) {
+                kalmanFilter.reset(0f)
+                kalmanFilter.resetCovariance(0.1f)
             }
         } else {
-            motionSampleCount = 0
-            motionDetected = false
+            // Outlier rejection: cycling acceleration rarely exceeds 4m/s^2 for long
+            val clampedAccel = filteredAcceleration.coerceIn(-5f, 5f)
+            kalmanFilter.predict(clampedAccel, dt, confidence)
         }
-        
-        // Only use acceleration if motion is clearly detected
-        // This prevents noise from causing false speed changes
-        if (motionDetected && kotlin.math.abs(forwardAcceleration) > 0.15f) {
-            kalmanFilter.updateWithAcceleration(forwardAcceleration, deltaTimeS)
-        } else if (!motionDetected) {
-            // When stationary, clamp speed toward zero
-            kalmanFilter.reduceSpeedTowardsZero(deltaTimeS)
-        }
-        
-        lastAccelUpdateTime = currentTime
+        return publish(timestampMillis)
     }
-    
-    /**
-     * Get current hybrid speed in m/s.
-     * Combines Kalman-filtered estimates with exponential smoothing.
-     */
+
+    private fun publish(timestampMillis: Long): Result {
+        val rawSpeed = kalmanFilter.getSpeed()
+        val variance = accelerationVariance()
+        val moving = rawSpeed > 0.55f || lastGpsSpeed > 0.65f || variance > 0.08f
+
+        if (moving) {
+            stationarySinceMillis = null
+            autoPaused = false
+        } else {
+            val since = stationarySinceMillis ?: timestampMillis.also { stationarySinceMillis = it }
+            autoPaused = timestampMillis - since >= autoPauseDelaySeconds * 1000L
+        }
+
+        val alpha = if (moving) 0.32f else 0.65f // More aggressive pull to zero
+        smoothedSpeed = if (autoPaused) {
+            0f
+        } else {
+            val nextSpeed = alpha * rawSpeed + (1f - alpha) * smoothedSpeed
+            // DISPLAY THRESHOLD: Show 0.0 if speed is < 1.0 km/h
+            if (nextSpeed * 3.6f < 1.0f) 0f else nextSpeed
+        }
+
+        return Result(
+            speedMetersPerSecond = smoothedSpeed.coerceAtLeast(0f),
+            isMoving = moving,
+            isAutoPaused = autoPaused,
+            accelerationVariance = variance,
+        )
+    }
+
+    private fun pushAcceleration(value: Float) {
+        if (accelerationWindow.size == 40) accelerationWindow.removeFirst()
+        accelerationWindow.addLast(value)
+    }
+
+    private fun accelerationVariance(): Float {
+        if (accelerationWindow.size < 4) return 0f
+        val mean = accelerationWindow.average().toFloat()
+        return accelerationWindow.fold(0f) { acc, value ->
+            val diff = value - mean
+            acc + diff * diff
+        } / max(1, accelerationWindow.size - 1)
+    }
+
+    @Synchronized
     fun getHybridSpeedMs(): Float {
-        val kalmanSpeed = kalmanFilter.getSpeed()
-        
-        // Apply exponential moving average for smoothing (heavy smoothing for stability)
-        smoothedSpeed = smoothingAlpha * kalmanSpeed + (1 - smoothingAlpha) * smoothedSpeed
-        
         return smoothedSpeed.coerceAtLeast(0f)
     }
-    
-    /**
-     * Get current hybrid speed in km/h.
-     */
-    fun getHybridSpeedKmh(): Float {
-        return getHybridSpeedMs() * 3.6f
-    }
-    
-    /**
-     * Detect if we're actually moving (vs noise).
-     * Returns true if speed is above minimum threshold.
-     */
-    fun isMoving(): Boolean {
-        return getHybridSpeedMs() > 0.3f  // ~1 km/h threshold
-    }
-    
-    /**
-     * Reset for new tracking session.
-     */
+
+    fun getHybridSpeedKmh(): Float = getHybridSpeedMs() * 3.6f
+
+    @Synchronized
+    fun isMoving(): Boolean = getHybridSpeedMs() > 0.55f || lastGpsSpeed > 0.65f
+
+    @Synchronized
     fun reset() {
         kalmanFilter.reset()
-        smoothedSpeed = 0.0f
-        recentAccelerations = FloatArray(10)
-        accelIndex = 0
-        motionDetected = false
-        motionSampleCount = 0
-        lastGPSUpdateTime = System.currentTimeMillis()
-        lastAccelUpdateTime = System.currentTimeMillis()
+        accelerationWindow.clear()
+        smoothedSpeed = 0f
+        lastGpsSpeed = 0f
+        lastUpdateNanos = 0L
+        stationarySinceMillis = null
+        autoPaused = false
+    }
+
+    fun updateGPSSpeed(speedMs: Float) {
+        updateGpsSpeed(speedMs, accuracyMeters = 8f, hasBearing = false)
+    }
+
+    fun updateAcceleration(forwardAcceleration: Float) {
+        updateAcceleration(forwardAcceleration, confidence = 0.6f, timestampNanos = System.nanoTime())
     }
 }

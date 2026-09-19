@@ -1,17 +1,31 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android Studio
+.idea/
 *.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+*.iws
+*.ipr
+
+# Local configuration
 local.properties
+*.keystore
+*.jks
+
+# Kotlin
+.kotlin/
+
+# Generated files
+captures/
+outputs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/app/src/main/java/com/createrman/biking/.artifacts
 /.artifacts
-/.idea

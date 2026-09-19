@@ -1,84 +1,80 @@
 package com.createrman.biking
 
+import kotlin.math.abs
+import kotlin.math.max
+
 /**
- * Simple 1D Kalman filter for fusing GPS speed with accelerometer-derived speed.
- * 
- * This filter combines:
- * - GPS speed: High accuracy but delayed (1-2 seconds latency)
- * - Accelerometer speed: Fast response but drifts over time
+ * Adaptive one-dimensional Kalman filter for bike speed.
+ *
+ * State is speed in m/s. Prediction is driven by forward acceleration, while GPS
+ * speed corrects accumulated drift. The filter adapts both process noise and
+ * measurement noise from acceleration confidence and GPS accuracy.
  */
 class KalmanFilter(
-    processNoise: Float = 0.05f,  // How fast speed can naturally change (m/s² variance)
-    measurementNoise: Float = 0.5f  // GPS measurement uncertainty (m/s)
+    private val baseProcessNoise: Float = 0.08f,
+    private val baseMeasurementNoise: Float = 0.6f,
 ) {
-    private var x = 0.0f  // State: current speed estimate (m/s)
-    private var p = 1.0f  // State covariance: uncertainty in our estimate
-    
-    private val q = processNoise  // Process noise: how much we expect speed to change
-    private val r = measurementNoise  // Measurement noise: GPS uncertainty
-    
-    /**
-     * Update filter with a new GPS measurement.
-     * @param gpsSpeed Speed from GPS in m/s
-     */
+    private var speed = 0f
+    private var covariance = 4f
+
+    fun predict(acceleration: Float, deltaTimeSeconds: Float, confidence: Float) {
+        val dt = deltaTimeSeconds.coerceIn(0.001f, 1.5f)
+        val trustedAcceleration = acceleration.coerceIn(-6f, 6f) * confidence.coerceIn(0f, 1f)
+        speed = (speed + trustedAcceleration * dt).coerceIn(0f, MAX_BIKE_SPEED_MS)
+
+        val maneuverNoise = baseProcessNoise + abs(trustedAcceleration) * 0.22f
+        val confidencePenalty = 1f + (1f - confidence.coerceIn(0f, 1f)) * 4f
+        covariance += maneuverNoise * confidencePenalty * dt
+    }
+
+    fun updateWithGps(gpsSpeed: Float, accuracyMeters: Float, hasBearing: Boolean) {
+        val measurement = gpsSpeed.coerceIn(0f, MAX_BIKE_SPEED_MS)
+        val accuracyNoise = when {
+            accuracyMeters <= 0f -> baseMeasurementNoise * 2f
+            accuracyMeters <= 5f -> baseMeasurementNoise
+            accuracyMeters <= 15f -> baseMeasurementNoise * 2.5f
+            else -> baseMeasurementNoise * 6f
+        }
+        val bearingBonus = if (hasBearing) 0.75f else 1f
+        val measurementNoise = max(0.08f, accuracyNoise * bearingBonus)
+
+        val innovation = measurement - speed
+        val innovationCovariance = covariance + measurementNoise
+        val gain = covariance / innovationCovariance
+        speed = (speed + gain * innovation).coerceIn(0f, MAX_BIKE_SPEED_MS)
+        covariance = max(0.001f, (1f - gain) * covariance)
+    }
+
+    fun forceStationary(deltaTimeSeconds: Float) {
+        val decay = 2.5f * deltaTimeSeconds.coerceIn(0.001f, 1.5f) // Increased decay
+        speed = (speed - decay).coerceAtLeast(0f)
+        covariance = max(0.01f, covariance * 0.85f) // Tighten covariance more
+    }
+
+    fun resetCovariance(targetCovariance: Float = 0.5f) {
+        covariance = targetCovariance
+    }
+
+    fun getSpeed(): Float = speed
+
+    fun reset(initialSpeed: Float = 0f) {
+        speed = initialSpeed.coerceIn(0f, MAX_BIKE_SPEED_MS)
+        covariance = 4f
+    }
+
     fun updateWithGPS(gpsSpeed: Float) {
-        // Predict step
-        p = p + q
-        
-        // Update step: incorporate GPS measurement
-        val y = gpsSpeed - x  // Innovation: difference between measurement and prediction
-        val s = p + r  // Innovation covariance
-        val k = p / s  // Kalman gain
-        
-        x = x + k * y  // Update state
-        p = (1 - k) * p  // Update covariance
+        updateWithGps(gpsSpeed, accuracyMeters = 8f, hasBearing = false)
     }
-    
-    /**
-     * Update filter with accelerometer data to improve prediction between GPS updates.
-     * @param acceleration Acceleration in m/s²
-     * @param deltaTime Time since last update in seconds
-     */
+
     fun updateWithAcceleration(acceleration: Float, deltaTime: Float) {
-        // Simple integration: speed = previous_speed + acceleration * time
-        val speedChange = acceleration * deltaTime
-        
-        // Predict step with motion model
-        x = x + speedChange
-        
-        // Increase uncertainty since we're relying on noisy accelerometer
-        p = p + q
-        
-        // Clamp speed to reasonable values (0 to 150 km/h = 0 to 41.7 m/s)
-        x = x.coerceIn(0f, 41.7f)
+        predict(acceleration, deltaTime, confidence = 0.65f)
     }
-    
-    /**
-     * Reduce speed towards zero when stationary (no motion detected).
-     * This prevents false speed estimates due to sensor noise.
-     * @param deltaTime Time since last update in seconds
-     */
+
     fun reduceSpeedTowardsZero(deltaTime: Float) {
-        // Gently decay speed towards zero at ~1 m/s per second
-        val decayRate = 1.0f  // m/s per second
-        val speedReduction = decayRate * deltaTime
-        
-        x = (x - speedReduction).coerceAtLeast(0f)
-        
-        // Very low uncertainty when reducing to zero
-        p = kotlin.math.max(0.01f, p * 0.95f)
+        forceStationary(deltaTime)
     }
-    
-    /**
-     * Get current speed estimate in m/s.
-     */
-    fun getSpeed(): Float = x
-    
-    /**
-     * Reset the filter (useful when starting new tracking session).
-     */
-    fun reset() {
-        x = 0.0f
-        p = 1.0f
+
+    private companion object {
+        const val MAX_BIKE_SPEED_MS = 45f
     }
 }

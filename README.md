@@ -1,75 +1,73 @@
-# 🚴 Biking - High Precision Tracker
+# Biking
 
-![Android](https://img.shields.io/badge/Platform-Android-brightgreen.svg)
-![Kotlin](https://img.shields.io/badge/Language-Kotlin-orange.svg)
-![Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-blue.svg)
-![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)
+[![Platform](https://img.shields.io/badge/platform-Android-3DDC84.svg)](https://developer.android.com/)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.2-7F52FF.svg)](https://kotlinlang.org/)
+[![Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4.svg)](https://developer.android.com/compose)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Biking** is a high-precision speedometer and route tracking application for Android. It combines GPS data with device sensors using advanced filtering techniques to provide smooth, real-time speed and location tracking, even in challenging environments.
+Repository: [https://github.com/createrman-system/biking](https://github.com/createrman-system/biking)
 
----
+Biking is a modern Android bike-tracking app focused on stable speed, clear ride stats, local history, and exportable ride data. It combines GPS with phone motion sensors so the speedometer stays responsive without jumping when the phone is in a pocket, bag, or angled mount.
 
-## ✨ Features
+## Features
 
-- **🚀 Hybrid Speed Tracking**: Combines GPS and Accelerometer/Gyroscope data for ultra-responsive speed readings.
-- **🛡️ Kalman Filtering**: Implements a Kalman filter to smooth out GPS noise and provide a stable speed display.
-- **🗺️ Interactive Maps**: Full map integration using OpenStreetMap (Osmdroid) to visualize your route in real-time.
-- **📊 Live Statistics**: Track your current speed, average speed, distance, and total duration.
-- **🌙 Dark Mode UI**: A sleek, high-contrast Material 3 interface optimized for visibility during outdoor rides.
-- **🔋 Background Tracking**: Reliable foreground service ensures tracking continues even when the screen is off or the app is in the background.
+- Hybrid speed tracking with GPS, rotation vector, linear acceleration, and an adaptive Kalman filter
+- Robust moving / stopped detection with manual pause and auto-pause
+- Foreground tracking service with live speed, distance, time, elevation, Pause, Resume, and Stop actions
+- Large sunlight-friendly speedometer with landscape support
+- Osmdroid map with route polyline, current position, follow mode, and bearing arrow
+- Local ride history powered by Room
+- Elevation gain and loss with smoothed GPS altitude
+- GPX export with elevation, timestamps, and speed extensions
+- Unit switch: km/h or mph
+- Theme preference: light, dark, or system
+- Ride name and note
+- About screen with version and project link
 
----
+## Tech Stack
 
-## 🛠️ Tech Stack
+- Kotlin
+- Jetpack Compose + Material 3
+- Kotlin Coroutines and StateFlow
+- Hilt dependency injection
+- Room local database
+- DataStore Preferences
+- Android foreground service
+- Android location and sensor APIs
+- Osmdroid OpenStreetMap rendering
 
-- **UI Framework**: [Jetpack Compose](https://developer.android.com/jetpack/compose) with Material 3.
-- **Programming Language**: [Kotlin](https://kotlinlang.org/) with Coroutines for asynchronous processing.
-- **Maps**: [Osmdroid](https://github.com/osmdroid/osmdroid) for OpenStreetMap integration.
-- **Architecture**: Modern Android architecture with Flow-based state management.
-- **Sensors**: Android Sensor API for motion detection and hybrid speed calculation.
+## Build and Run
 
----
+```bash
+git clone https://github.com/createrman-system/biking.git
+cd biking
+./gradlew assembleDebug
+```
 
-## 🚀 Getting Started
+Open the project in Android Studio, select the `app` run configuration, and run it on a physical Android device. Real GPS and motion sensors are required for meaningful tracking.
 
-### Prerequisites
+## Required Permissions
 
-- Android Studio Koala (or newer)
-- Android SDK 30+ (Min SDK)
-- A device with GPS and Motion Sensors (Accelerometer/Gyroscope)
+- Fine and coarse location: route, distance, speed, elevation, and map position
+- Foreground service location: reliable tracking while the app is in the background
+- Notifications: live tracking notification on Android 13+
+- Internet and network state: OpenStreetMap tile loading
 
-### Installation
+## How Hybrid Tracking Works
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/biking.git
-   ```
-2. Open the project in **Android Studio**.
-3. Sync the project with Gradle files.
-4. Run the app on your physical device (highly recommended for sensor accuracy).
+Biking reads GPS speed and location as the long-term ground truth. Between GPS updates it uses `TYPE_ROTATION_VECTOR` to understand phone orientation and `TYPE_LINEAR_ACCELERATION` to convert motion into horizontal, forward acceleration relative to the current course. An adaptive Kalman filter predicts short-term speed from acceleration and corrects drift with GPS, while a stationary detector combines low GPS speed with low acceleration variance to suppress false movement and trigger auto-pause.
 
-### Permissions
+## Privacy
 
-The app requires the following permissions to function correctly:
-- `ACCESS_FINE_LOCATION`: For GPS tracking.
-- `BODY_SENSORS`: For high-precision motion data.
-- `POST_NOTIFICATIONS`: For the tracking service notification (Android 13+).
+All ride data is stored only locally on your device. Biking does not upload rides, locations, notes, or sensor data to any server. GPX files are created locally only when you export or share them.
 
----
+## Contributing
 
-## 🧠 How it Works
+Issues and pull requests are welcome:
 
-The core of the app is the `HybridSpeedCalculator`. It doesn't just rely on GPS, which can be laggy or jumpy. Instead, it uses a **Kalman Filter** to fuse GPS velocity with linear acceleration from the device's IMU. This results in:
-- Faster response to acceleration and braking.
-- Smoother speed transitions.
-- Better performance in "urban canyons" where GPS might be weak.
+- [Open an issue](https://github.com/createrman-system/biking/issues)
+- [View the repository](https://github.com/createrman-system/biking)
 
----
+## License
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-*Made with ❤️ for cyclists.*
+MIT. See [LICENSE](LICENSE).
