@@ -1,0 +1,15 @@
+Biking is a modern, privacy-friendly bike tracking app for Android.
+
+It combines GPS with the phone’s motion sensors (rotation vector + linear acceleration) and an adaptive Kalman filter to deliver stable and responsive speed readings — even when the phone is in a pocket or mounted at an angle.
+
+Features:
+• Hybrid speed tracking (GPS + sensors)
+• Smart moving/stopped detection and auto-pause
+• Live map with route polyline and follow mode
+• Local ride history
+• Elevation gain/loss
+• GPX export
+• Foreground service with live notification
+• Unit switch (km/h ↔ mph) and theme support
+
+All ride data stays only on your device. No accounts, no tracking, no cloud.

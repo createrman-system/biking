@@ -1,0 +1,5 @@
+• Completely reworked hybrid speed engine with Kalman filter
+• Added ride history, GPX export and elevation tracking
+• Improved map with follow mode and bike icon
+• Much better stationary detection (no more false high speeds)
+• New modern architecture and Material 3 UI
